@@ -1,0 +1,59 @@
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import { PassportStrategy } from '@nestjs/passport';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { User } from '@prisma/client';
+
+import { JWT_SECRET } from '../../shared/constants/global.constants';
+import { PrismaService } from '../prisma/prisma.service';
+
+const cookieExtractor = (req) => req?.cookies.accessToken;
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  constructor(private prisma: PrismaService) {
+    super({
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        ExtractJwt.fromUrlQueryParameter('token'),
+        cookieExtractor,
+      ]),
+      ignoreExpiration: process.env.NODE_ENV === 'dev',
+      secretOrKey: JWT_SECRET,
+    });
+  }
+
+  async validate(payload: any): Promise<any> {
+    const email = payload.email;
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: {
+        roles: {
+          include: {
+            permissions: true,
+          },
+        },
+        employee: {
+          include: {
+            jobTitle: true,
+            department: true,
+            manager: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is deactivated');
+    }
+    // charge.docx §4.1: deactivated employees lose access even if user.isActive lags.
+    if (user.employee && user.employee.status === 'inactive') {
+      throw new UnauthorizedException('Employee account is inactive');
+    }
+
+    return user;
+  }
+}
